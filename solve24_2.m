@@ -1,11 +1,11 @@
 function solve24_2(nums, target)
+    % solve24([2 2 3 4])
     % solve24([15 2 6 16])
     % solve24([3 3 12 13], 36)
-    % 支持重复数字，自动合并本质相同的解
 
     if nargin < 1
-        fprintf('未输入参数，使用默认测试：15 2 6 16\n');
-        nums = [15 2 6 16];
+        fprintf('未输入参数，使用默认测试：2 2 3 4\n');
+        nums = [2 2 3 4];
     end
     if nargin < 2
         target = 24;
@@ -14,7 +14,7 @@ function solve24_2(nums, target)
     nums = nums(:).';
     perms_list = perms(nums);
     all_exprs = {};
-    all_norm = {};
+    all_sigs = {};
 
     for p = 1:size(perms_list,1)
         x = perms_list(p,:);
@@ -27,19 +27,23 @@ function solve24_2(nums, target)
         if ~isempty(res)
             for i = 1:length(res)
                 e = res{i};
-                % 生成规范化版本：把数字替换为排序索引
-                norm_e = canonicalize(e, x);
-                % 检查是否已存在
+                % 解析表达式树
+                tree = parse_expr(e);
+                % 归一化树
+                norm_tree = normalize_tree(tree);
+                % 生成签名（用于去重）
+                sig = tree_to_string(norm_tree);
+                % 检查重复
                 isdup = false;
-                for j = 1:length(all_norm)
-                    if strcmp(norm_e, all_norm{j})
+                for j = 1:length(all_sigs)
+                    if strcmp(sig, all_sigs{j})
                         isdup = true;
                         break;
                     end
                 end
                 if ~isdup
                     all_exprs = [all_exprs; {e}];  %#ok<AGROW>
-                    all_norm = [all_norm; {norm_e}];  %#ok<AGROW>
+                    all_sigs = [all_sigs; {sig}];  %#ok<AGROW>
                 end
             end
         end
@@ -53,36 +57,6 @@ function solve24_2(nums, target)
     fprintf('共找到 %d 种不同算式：\n', length(all_exprs));
     for i = 1:length(all_exprs)
         fprintf('  %s = %g\n', all_exprs{i}, target);
-    end
-end
-
-% ============ 规范化：把数字替换为索引 ============
-function s = canonicalize(e, x)
-    % 把表达式中的数字替换为 {idx}，idx 按数值排序
-    % 例如 x=[3 3 12 13]，3->0, 3->0, 12->1, 13->2
-    % 这样交换相同数字位置的表达式归一化为同一个
-    [~, order] = sort(x);
-    % 给相同值分配相同索引
-    idx_map = zeros(size(x));
-    next_id = 0;
-    for i = 1:length(x)
-        if i > 1 && abs(x(order(i)) - x(order(i-1))) < 1e-10
-            idx_map(order(i)) = idx_map(order(i-1));
-        else
-            idx_map(order(i)) = next_id;
-            next_id = next_id + 1;
-        end
-    end
-
-    s = e;
-    % 按长度降序替换，避免 "12" 被 "1" 和 "2" 误替换
-    tokens = {};
-    for i = 1:length(x)
-        tokens{i} = num2str(x(i));
-    end
-    [~, len_order] = sort(cellfun(@length, tokens), 'descend');
-    for i = len_order
-        s = strrep(s, tokens{i}, ['{' num2str(idx_map(i)) '}']);
     end
 end
 
@@ -128,7 +102,6 @@ function [out_exprs, out_vals] = search(nums, exprs, target, tol)
                 end
 
                 new_nums(j_new) = v;
-
                 new_exprs = exprs(idx);
                 new_exprs{j_new} = ['(' exprs{i} ops{op} exprs{j} ')'];
 
@@ -139,5 +112,104 @@ function [out_exprs, out_vals] = search(nums, exprs, target, tol)
                 end
             end
         end
+    end
+end
+
+% ============ 解析表达式为树 ============
+function tree = parse_expr(s)
+    s = strtrim(s);
+    % 如果整体被括号包裹且是完整包裹，去掉
+    while startsWith(s, '(') && endsWith(s, ')') && is_balanced(s)
+        s = s(2:end-1);
+    end
+    % 找顶层运算符
+    op_pos = find_top_op(s);
+    if isempty(op_pos)
+        tree = {'num', s};  % 叶子：数字
+    else
+        left = strtrim(s(1:op_pos-1));
+        right = strtrim(s(op_pos+1:end));
+        tree = {s(op_pos), parse_expr(left), parse_expr(right)};
+    end
+end
+
+function balanced = is_balanced(s)
+    depth = 0;
+    for i = 1:length(s)
+        if s(i) == '(', depth = depth + 1;
+        elseif s(i) == ')', depth = depth - 1;
+        end
+        if depth < 0, balanced = false; return; end
+    end
+    balanced = (depth == 0);
+end
+
+function pos = find_top_op(s)
+    depth = 0;
+    pos = [];
+    for i = 1:length(s)
+        if s(i) == '(', depth = depth + 1;
+        elseif s(i) == ')', depth = depth - 1;
+        elseif depth == 0
+            if s(i) == '+' || s(i) == '-'
+                pos = i;
+                return;
+            elseif isempty(pos) && (s(i) == '*' || s(i) == '/')
+                pos = i;
+            end
+        end
+    end
+end
+
+% ============ 归一化树 ============
+function t = normalize_tree(t)
+    if ~iscell(t) || strcmp(t{1}, 'num')
+        return;
+    end
+    % 递归归一化子节点
+    left = normalize_tree(t{2});
+    right = normalize_tree(t{3});
+    op = t{1};
+
+    % 交换律：+ 和 * 时，按字符串排序子节点
+    if op == '+' || op == '*'
+        % 展平同操作符合并：(a+b)+c -> {op, a, b, c}
+        leaves = collect_flat(left, op);
+        leaves = [leaves, collect_flat(right, op)];
+        % 排序
+        leaves = sort_leaves(leaves);
+        % 重新构建左结合树
+        t = leaves{1};
+        for i = 2:length(leaves)
+            t = {op, t, leaves{i}};
+        end
+    else
+        t = {op, left, right};
+    end
+end
+
+function leaves = collect_flat(t, op)
+    if iscell(t) && ~strcmp(t{1}, 'num') && t{1} == op
+        leaves = [collect_flat(t{2}, op), collect_flat(t{3}, op)];
+    else
+        leaves = {t};
+    end
+end
+
+function leaves = sort_leaves(leaves)
+    % 按字符串表示排序
+    strs = cellfun(@tree_to_string, leaves, 'UniformOutput', false);
+    [~, order] = sort(strs);
+    leaves = leaves(order);
+end
+
+% ============ 树转字符串 ============
+function s = tree_to_string(t)
+    if strcmp(t{1}, 'num')
+        s = t{2};
+    else
+        left = tree_to_string(t{2});
+        right = tree_to_string(t{3});
+        s = ['(' left t{1} right ')'];
     end
 end
